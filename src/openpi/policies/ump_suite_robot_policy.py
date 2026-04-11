@@ -1,0 +1,51 @@
+import dataclasses
+import einops
+import numpy as np
+
+from openpi import transforms
+from openpi.models import model as _model
+
+
+def _parse_image(image) -> np.ndarray:
+    image = np.asarray(image)
+    if np.issubdtype(image.dtype, np.floating):
+        image = (255 * image).astype(np.uint8)
+    if image.shape[0] == 3:  # (C,H,W) -> (H,W,C)
+        image = einops.rearrange(image, "c h w -> h w c")
+    return image
+
+
+@dataclasses.dataclass(frozen=True)
+class UmpSuiteRobotInputs(transforms.DataTransformFn):
+    model_type: _model.ModelType
+
+    def __call__(self, data: dict) -> dict:
+        base_image = _parse_image(data["observation/image"])
+
+        inputs = {
+            "state": data["observation/state"],
+            "image": {
+                "base_0_rgb":        base_image,
+                "left_wrist_0_rgb":  np.zeros_like(base_image),
+                "right_wrist_0_rgb": np.zeros_like(base_image),
+            },
+            "image_mask": {
+                "base_0_rgb":        np.True_,
+                # Only pi0-FAST needs the padding images unmasked.
+                "left_wrist_0_rgb":  np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
+                "right_wrist_0_rgb": np.True_ if self.model_type == _model.ModelType.PI0_FAST else np.False_,
+            },
+        }
+        if "actions" in data:
+            inputs["actions"] = data["actions"]
+        if "prompt" in data:
+            inputs["prompt"] = data["prompt"]
+        return inputs
+
+
+@dataclasses.dataclass(frozen=True)
+class UmpSuiteRobotOutputs(transforms.DataTransformFn):
+    def __call__(self, data: dict) -> dict:
+        # π₀ pads the action vector to its internal width (32 for pi0, 7 for pi0-FAST default).
+        # Slice back to our 5 DoF.
+        return {"actions": np.asarray(data["actions"][:, :5])}

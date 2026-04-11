@@ -13,6 +13,7 @@ import flax.nnx as nnx
 from typing_extensions import override
 import tyro
 
+import openpi.policies.ump_suite_robot_policy as ump_suite_robot_policy
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
@@ -422,6 +423,40 @@ class RLDSDroidDataConfig(DataConfigFactory):
             datasets=self.datasets,
         )
 
+@dataclasses.dataclass(frozen=True)
+class LeRobotUmpSuiteRobotDataConfig(DataConfigFactory):
+    # True => subtract state from action at train time, so the model learns deltas.
+    # Your raw data stores absolute-next-pose actions, so True is the π₀-recommended setting.
+    use_delta_actions: bool = True
+
+    @override
+    def create(self, assets_dirs, model_config):
+        repack_transform = _transforms.Group(
+            inputs=[_transforms.RepackTransform({
+                "observation/image": "image",
+                "observation/state": "state",
+                "actions":           "actions",
+                "prompt":            "prompt",
+            })]
+        )
+        data_transforms = _transforms.Group(
+            inputs=[ump_suite_robot_policy.UmpSuiteRobotInputs(model_type=model_config.model_type)],
+            outputs=[ump_suite_robot_policy.UmpSuiteRobotOutputs()],
+        )
+        if self.use_delta_actions:
+            mask = _transforms.make_bool_mask(5)  # all 5 dims are deltas
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(mask)],
+                outputs=[_transforms.AbsoluteActions(mask)],
+            )
+        model_transforms = ModelTransformFactory()(model_config)
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotDROIDDataConfig(DataConfigFactory):
@@ -708,7 +743,7 @@ _CONFIGS = [
         # max_token_len). A good rule of thumb is to use approx 180 for single-arm robots, and approx 250 for
         # two-arm robots. Generally, err on the lower side here first, and potentially increase the value if
         # you see many warnings being thrown during training.
-        model=pi0_fast.Pi0FASTConfig(action_dim=7, action_horizon=10, max_token_len=180),
+        model=pi0_fast.Pi0FASTConfig(action_dim=5, action_horizon=10, max_token_len=180),
         data=LeRobotLiberoDataConfig(
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
@@ -723,7 +758,7 @@ _CONFIGS = [
         # Here is an example of loading a pi0-FAST model for LoRA finetuning.
         # For setting action_dim, action_horizon, and max_token_len, see the comments above.
         model=pi0_fast.Pi0FASTConfig(
-            action_dim=7, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
+            action_dim=5, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
         ),
         data=LeRobotLiberoDataConfig(
             repo_id="physical-intelligence/libero",
@@ -735,7 +770,7 @@ _CONFIGS = [
         # Again, make sure to match the model config above when extracting the freeze filter
         # that specifies which parameters should be frozen during LoRA finetuning.
         freeze_filter=pi0_fast.Pi0FASTConfig(
-            action_dim=7, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
+            action_dim=5, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
         ).get_freeze_filter(),
         # Turn off EMA for LoRA finetuning.
         ema_decay=None,
@@ -916,6 +951,119 @@ _CONFIGS = [
         num_train_steps=20_000,
         batch_size=32,
     ),
+
+    # ---- pi0 full ----
+    TrainConfig(
+        name="pi0_ump_suite_robot",
+        model=pi0_config.Pi0Config(action_horizon=10),
+        data=LeRobotUmpSuiteRobotDataConfig(
+            repo_id="RaianSilex/ump_suite_robot_dataset",
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+    ),
+
+    # ---- pi0 LoRA ----
+    TrainConfig(
+        name="pi0_ump_suite_robot_low_mem_finetune",
+        model=pi0_config.Pi0Config(
+            action_horizon=10,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotUmpSuiteRobotDataConfig(
+            repo_id="RaianSilex/ump_suite_robot_dataset",
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            action_horizon=10,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,  # disable EMA for LoRA
+    ),
+
+    # ---- pi0-FAST full ----
+    TrainConfig(
+        name="pi0_fast_ump_suite_robot",
+        # action_dim, action_horizon, max_token_len: see comments in config.py near pi0_fast_libero
+        model=pi0_fast.Pi0FASTConfig(action_dim=5, action_horizon=10, max_token_len=180),
+        data=LeRobotUmpSuiteRobotDataConfig(
+            repo_id="RaianSilex/ump_suite_robot_dataset",
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        num_train_steps=30_000,
+    ),
+
+    # ---- pi0-FAST LoRA ----
+    TrainConfig(
+        name="pi0_fast_ump_suite_robot_low_mem_finetune",
+        model=pi0_fast.Pi0FASTConfig(
+            action_dim=5, action_horizon=10, max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ),
+        data=LeRobotUmpSuiteRobotDataConfig(
+            repo_id="RaianSilex/ump_suite_robot_dataset",
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
+        num_train_steps=30_000,
+        freeze_filter=pi0_fast.Pi0FASTConfig(
+            action_dim=5, action_horizon=10, max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
+    # ---- pi0.5 full ----
+    TrainConfig(
+        name="pi05_ump_suite_robot",
+        model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
+        data=LeRobotUmpSuiteRobotDataConfig(
+            repo_id="RaianSilex/ump_suite_robot_dataset",
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=False,  # pi0.5 recipe trains on absolute actions
+        ),
+        batch_size=256,  # drop this if you don't have an 80GB GPU
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=10_000, peak_lr=5e-5,
+            decay_steps=1_000_000, decay_lr=5e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+    ),
+
+    # ---- pi0.5 LoRA ----
+    TrainConfig(
+        name="pi05_ump_suite_robot_low_mem_finetune",
+        model=pi0_config.Pi0Config(
+            pi05=True, action_horizon=10, discrete_state_input=False,
+            max_token_len=180, paligemma_variant="gemma_2b_lora",
+        ),
+        data=LeRobotUmpSuiteRobotDataConfig(
+            repo_id="RaianSilex/ump_suite_robot_dataset",
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_actions=False,  # pi0.5 recipe trains on absolute actions
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=30_000,
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, action_horizon=10, discrete_state_input=False,
+            max_token_len=180, paligemma_variant="gemma_2b_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,
+    ),
+
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
     #
