@@ -62,7 +62,9 @@ uv run examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py \
     --data-root /path/to/DATA_ROOT
 ```
 
-Add `--push-to-hub` if you also want to push the dataset to the Hugging Face Hub.
+Add `--push-to-hub` if you also want to push the dataset to the Hugging Face Hub. See
+[section 2a](#2a-optional-authenticate-with-hugging-face-before-using---push-to-hub) below
+for the one-time auth step.
 
 Before running, open the script and confirm the top-of-file constants match what you want:
 
@@ -75,6 +77,30 @@ Before running, open the script and confirm the top-of-file constants match what
 The resulting LeRobot dataset is written to `$HF_LEROBOT_HOME/<REPO_NAME>` (default
 `~/.cache/huggingface/lerobot/...`). After this step the raw CSV/PNG layout is no longer needed
 for training.
+
+### 2a. (Optional) Authenticate with Hugging Face before using `--push-to-hub`
+
+Pushing to the Hub needs an **access token** (not your password). One-time setup:
+
+1. Create a token at https://huggingface.co/settings/tokens with **Write** access and copy the
+   `hf_...` string.
+2. Log in locally — this stores the token at `~/.cache/huggingface/token`:
+   ```bash
+   uv run huggingface-cli login
+   ```
+   Paste the token when prompted. You only do this once per machine. Alternatively, export
+   it as an env var for the current shell:
+   ```bash
+   export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxx
+   ```
+3. Make sure `REPO_NAME` in the conversion script starts with **your** username (or an org
+   you belong to). Your own username always works.
+
+Then rerun the conversion with `--push-to-hub`. The repo is created automatically on first
+push, so there is no need to pre-create it in the web UI. The script pushes with
+`private=True`; flip it to `False` in
+[examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py](../../examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py)
+if you want the dataset public.
 
 ---
 
