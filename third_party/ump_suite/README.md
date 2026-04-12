@@ -1,8 +1,18 @@
-# ump_suite — openpi finetuning for the uMp Sensapex micromanipulator
+# ump_suite — openpi finetuning for the dual uMp Sensapex rig
 
 This folder documents how to finetune the π₀ / π₀-FAST / π₀.₅ models on data collected from the
-**uMp Sensapex micromanipulator** (controlled from ROS 2 via the `ump_suite` package) and how to
-serve the resulting policy.
+**dual uMp Sensapex micromanipulator rig** (two uMp stages + one ODrive focusing motor,
+controlled from ROS 2 via the `ump_suite` package) and how to serve the resulting policy.
+
+The rig produces a **9-D** state / action vector ordered as:
+
+```
+[x1, y1, z1, d1,  x2, y2, z2, d2,  h]
+ └── uMp #1 ──┘  └── uMp #2 ──┘   └─ ODrive focus motor (ticks)
+```
+
+This order must be consistent across the CSV logs, the conversion script, the policy
+input/output transforms, the training config, and the robot client (`sensapex_env.py`).
 
 It also contains a generic, step-by-step guide at the bottom for anyone who wants to adapt this
 pipeline to their **own robot**.
@@ -25,30 +35,38 @@ up to 90% of GPU memory (default is 75%).
 
 ## 1. Collect and lay out raw data
 
-The conversion script expects this layout under some `DATA_ROOT` of your choice:
+Each episode is one `trial_*.csv` file under `DATA_ROOT` (either directly in `DATA_ROOT/` or
+under `DATA_ROOT/logs/`). The converter auto-detects both layouts. Every row is one control
+tick and contains both the **current state** and the **target command** for that tick, plus a
+path to the camera frame:
 
 ```
-<DATA_ROOT>/
-├── logs/
-│   ├── trial_01.csv
-│   ├── trial_02.csv
-│   └── ...
-└── frames/
-    ├── trial_01/
-    │   ├── frame_0000.png
-    │   ├── frame_0001.png
-    │   └── ...
-    ├── trial_02/
-    │   └── ...
-    └── ...
+timestep,
+current_x,  current_y,  current_z,  current_d,   current_motor,
+target_x,   target_y,   target_z,   target_d,    target_motor,
+current_x2, current_y2, current_z2, current_d2,
+target_x2,  target_y2,  target_z2,  target_d2,
+image_path
 ```
 
-- Each `trial_XX.csv` holds one episode. Columns must be exactly `x, y, z, d, h` (the 5-DoF
-  absolute next pose commanded each step).
-- Each `frames/trial_XX/frame_*.png` is the matching camera image for that trial. Frame `t` is
-  paired with row `t` of the CSV.
-- The conversion script pairs `state_t = csv_row_t`, `action_t = csv_row_{t+1}` (absolute next
-  pose), and uses `frames[t]` as the image. It drops the last frame.
+- `current_*` and `current_*2` are the live poses of uMp #1 and uMp #2 (4 axes each).
+- `current_motor` / `target_motor` are the ODrive tick count for the focusing motor.
+- `target_*` / `target_*2` are the absolute commands that were sent that tick — the converter
+  uses these directly as the action labels (no `t+1` shifting).
+- `image_path` may be absolute, or relative to `DATA_ROOT`, or relative to the CSV's folder —
+  the converter tries each. Rows with an empty `image_path` are skipped.
+- The converter assembles the 9-D state and action vectors in this fixed order (matching
+  `sensapex_env.py`):
+  ```
+  [current_x, current_y, current_z, current_d,      # uMp #1
+   current_x2, current_y2, current_z2, current_d2,  # uMp #2
+   current_motor]                                   # ODrive h
+  ```
+
+If you ever rename the CSV headers, edit the `STATE_*_COLS` / `ACTION_*_COLS` constants at the
+top of
+[convert_ump_suite_robot_data_to_lerobot.py](../../examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py)
+— the concatenation order there is what defines the final 9-D layout.
 
 ---
 
@@ -175,14 +193,14 @@ This spins up a websocket policy server on port 8000. Point your ROS 2 `ump_suit
 ```python
 {
     "observation/image": <H, W, 3 uint8>,   # base camera frame, any resolution (resized to 224)
-    "observation/state": <5,  float32>,      # current [x, y, z, d, h]
+    "observation/state": <9,  float32>,      # current [x1, y1, z1, d1, x2, y2, z2, d2, h]
     "prompt":            "Move the needle towards the bead",
 }
 ```
 
-The server responds with `{"actions": <action_horizon, 5> float32}` — a chunk of absolute next
+The server responds with `{"actions": <action_horizon, 9> float32}` — a chunk of absolute next
 poses. Use the first one (or roll through the whole chunk at your control rate) as the command
-to the micromanipulator.
+to the dual-micromanipulator rig.
 
 A minimal Python example of calling a policy server from your own runtime lives in
 [docs/remote_inference.md](../../docs/remote_inference.md).

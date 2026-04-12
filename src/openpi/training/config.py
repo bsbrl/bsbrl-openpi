@@ -444,7 +444,7 @@ class LeRobotUmpSuiteRobotDataConfig(DataConfigFactory):
             outputs=[ump_suite_robot_policy.UmpSuiteRobotOutputs()],
         )
         if self.use_delta_actions:
-            mask = _transforms.make_bool_mask(5)  # all 5 dims are deltas
+            mask = _transforms.make_bool_mask(9)  # all 9 dims are deltas
             data_transforms = data_transforms.push(
                 inputs=[_transforms.DeltaActions(mask)],
                 outputs=[_transforms.AbsoluteActions(mask)],
@@ -743,7 +743,7 @@ _CONFIGS = [
         # max_token_len). A good rule of thumb is to use approx 180 for single-arm robots, and approx 250 for
         # two-arm robots. Generally, err on the lower side here first, and potentially increase the value if
         # you see many warnings being thrown during training.
-        model=pi0_fast.Pi0FASTConfig(action_dim=5, action_horizon=10, max_token_len=180),
+        model=pi0_fast.Pi0FASTConfig(action_dim=7, action_horizon=10, max_token_len=180),
         data=LeRobotLiberoDataConfig(
             repo_id="physical-intelligence/libero",
             base_config=DataConfig(prompt_from_task=True),
@@ -758,7 +758,7 @@ _CONFIGS = [
         # Here is an example of loading a pi0-FAST model for LoRA finetuning.
         # For setting action_dim, action_horizon, and max_token_len, see the comments above.
         model=pi0_fast.Pi0FASTConfig(
-            action_dim=5, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
+            action_dim=7, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
         ),
         data=LeRobotLiberoDataConfig(
             repo_id="physical-intelligence/libero",
@@ -770,7 +770,7 @@ _CONFIGS = [
         # Again, make sure to match the model config above when extracting the freeze filter
         # that specifies which parameters should be frozen during LoRA finetuning.
         freeze_filter=pi0_fast.Pi0FASTConfig(
-            action_dim=5, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
+            action_dim=7, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
         ).get_freeze_filter(),
         # Turn off EMA for LoRA finetuning.
         ema_decay=None,
@@ -992,7 +992,7 @@ _CONFIGS = [
     TrainConfig(
         name="pi0_fast_ump_suite_robot",
         # action_dim, action_horizon, max_token_len: see comments in config.py near pi0_fast_libero
-        model=pi0_fast.Pi0FASTConfig(action_dim=5, action_horizon=10, max_token_len=180),
+        model=pi0_fast.Pi0FASTConfig(action_dim=9, action_horizon=10, max_token_len=180),
         data=LeRobotUmpSuiteRobotDataConfig(
             repo_id="RaianSilex/ump_suite_robot_dataset",
             base_config=DataConfig(prompt_from_task=True),
@@ -1006,7 +1006,7 @@ _CONFIGS = [
     TrainConfig(
         name="pi0_fast_ump_suite_robot_low_mem_finetune",
         model=pi0_fast.Pi0FASTConfig(
-            action_dim=5, action_horizon=10, max_token_len=180,
+            action_dim=9, action_horizon=10, max_token_len=180,
             paligemma_variant="gemma_2b_lora",
         ),
         data=LeRobotUmpSuiteRobotDataConfig(
@@ -1017,7 +1017,7 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
         num_train_steps=30_000,
         freeze_filter=pi0_fast.Pi0FASTConfig(
-            action_dim=5, action_horizon=10, max_token_len=180,
+            action_dim=9, action_horizon=10, max_token_len=180,
             paligemma_variant="gemma_2b_lora",
         ).get_freeze_filter(),
         ema_decay=None,

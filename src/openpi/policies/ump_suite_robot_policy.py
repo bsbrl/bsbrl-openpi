@@ -46,6 +46,6 @@ class UmpSuiteRobotInputs(transforms.DataTransformFn):
 @dataclasses.dataclass(frozen=True)
 class UmpSuiteRobotOutputs(transforms.DataTransformFn):
     def __call__(self, data: dict) -> dict:
-        # π₀ pads the action vector to its internal width (32 for pi0, 7 for pi0-FAST default).
-        # Slice back to our 5 DoF.
-        return {"actions": np.asarray(data["actions"][:, :5])}
+        # π₀ pads the action vector to its internal width (32 for pi0, action_dim for pi0-FAST).
+        # Slice back to our 9 DoF: [x1, y1, z1, d1, x2, y2, z2, d2, h].
+        return {"actions": np.asarray(data["actions"][:, :9])}
