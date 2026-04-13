@@ -106,7 +106,9 @@ def main(data_root: Path, *, push_to_hub: bool = False):
         df = pd.read_csv(csv_path)
 
         # Drop rows with no image path recorded (e.g. pre-recording padding).
-        df = df[df[IMAGE_PATH_COL].astype(str).str.len() > 0].reset_index(drop=True)
+        # Note: NaNs stringify to "nan", so we need an explicit null check here.
+        image_paths = df[IMAGE_PATH_COL]
+        df = df[image_paths.notna() & image_paths.astype(str).str.strip().ne("")].reset_index(drop=True)
         if len(df) == 0:
             print(f"skipping {trial}: no valid rows")
             continue

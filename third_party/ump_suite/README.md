@@ -1,46 +1,50 @@
-# ump_suite — openpi finetuning for the dual uMp Sensapex rig
+# ump_suite in openpi
 
-This folder documents how to finetune the π₀ / π₀-FAST / π₀.₅ models on data collected from the
-**dual uMp Sensapex micromanipulator rig** (two uMp stages + one ODrive focusing motor,
-controlled from ROS 2 via the `ump_suite` package) and how to serve the resulting policy.
+This folder documents how to use `openpi` with the dual Sensapex uMp micromanipulator setup driven by
+`ump_suite`, and how to adapt the same pattern to a different robot.
 
-The rig produces a **9-D** state / action vector ordered as:
+The `ump_suite_robot` integration currently consists of three pieces:
 
-```
+- [examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py](../../examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py)
+- [src/openpi/policies/ump_suite_robot_policy.py](../../src/openpi/policies/ump_suite_robot_policy.py)
+- [src/openpi/training/config.py](../../src/openpi/training/config.py)
+
+At a high level, the pipeline is:
+
+1. Record demonstrations from the robot.
+2. Convert them to a LeRobot dataset.
+3. Compute normalization statistics.
+4. Fine-tune a VLA checkpoint.
+5. Serve the trained checkpoint with `serve_policy.py`.
+6. Send live observations from the robot runtime and execute returned actions.
+
+## Robot layout
+
+The rig uses a 9-D state/action vector:
+
+```text
 [x1, y1, z1, d1,  x2, y2, z2, d2,  h]
- └── uMp #1 ──┘  └── uMp #2 ──┘   └─ ODrive focus motor (ticks)
+ └── uMp #1 ──┘  └── uMp #2 ──┘   └─ ODrive focus motor
 ```
 
-This order must be consistent across the CSV logs, the conversion script, the policy
-input/output transforms, the training config, and the robot client (`sensapex_env.py`).
+This ordering must stay consistent across:
 
-It also contains a generic, step-by-step guide at the bottom for anyone who wants to adapt this
-pipeline to their **own robot**.
+- raw demonstrations
+- the LeRobot conversion script
+- the policy input/output transforms
+- the training config
+- the robot runtime that talks to the policy server
 
----
+## 1. Raw demonstration format
 
-## 0. One-time setup
+Each episode is one `trial_*.csv` file. The converter accepts either:
 
-All commands below are run from the **repo root** (`bsbrl-openpi/`) unless stated otherwise.
+- `DATA_ROOT/trial_*.csv`
+- `DATA_ROOT/logs/trial_*.csv`
 
-```bash
-cd bsbrl-openpi
-uv sync              # install deps (requires uv; Python 3.11)
-```
+Each CSV row is one control tick and should contain:
 
-GPU memory: set `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9` before the training command to let JAX use
-up to 90% of GPU memory (default is 75%).
-
----
-
-## 1. Collect and lay out raw data
-
-Each episode is one `trial_*.csv` file under `DATA_ROOT` (either directly in `DATA_ROOT/` or
-under `DATA_ROOT/logs/`). The converter auto-detects both layouts. Every row is one control
-tick and contains both the **current state** and the **target command** for that tick, plus a
-path to the camera frame:
-
-```
+```text
 timestep,
 current_x,  current_y,  current_z,  current_d,   current_motor,
 target_x,   target_y,   target_z,   target_d,    target_motor,
@@ -49,302 +53,261 @@ target_x2,  target_y2,  target_z2,  target_d2,
 image_path
 ```
 
-- `current_*` and `current_*2` are the live poses of uMp #1 and uMp #2 (4 axes each).
-- `current_motor` / `target_motor` are the ODrive tick count for the focusing motor.
-- `target_*` / `target_*2` are the absolute commands that were sent that tick — the converter
-  uses these directly as the action labels (no `t+1` shifting).
-- `image_path` may be absolute, or relative to `DATA_ROOT`, or relative to the CSV's folder —
-  the converter tries each. Rows with an empty `image_path` are skipped.
-- The converter assembles the 9-D state and action vectors in this fixed order (matching
-  `sensapex_env.py`):
-  ```
-  [current_x, current_y, current_z, current_d,      # uMp #1
-   current_x2, current_y2, current_z2, current_d2,  # uMp #2
-   current_motor]                                   # ODrive h
-  ```
+Semantics:
 
-If you ever rename the CSV headers, edit the `STATE_*_COLS` / `ACTION_*_COLS` constants at the
-top of
-[convert_ump_suite_robot_data_to_lerobot.py](../../examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py)
-— the concatenation order there is what defines the final 9-D layout.
+- `current_*` and `current_*2` are the observed robot state at that tick.
+- `target_*` and `target_*2` are the commands issued at that same tick.
+- `current_motor` and `target_motor` are the focus motor values.
+- `image_path` can be absolute, relative to `DATA_ROOT`, or relative to the CSV directory.
 
----
+The converter builds:
 
-## 2. Convert raw data to a LeRobot dataset
+```text
+state   = [current_x, current_y, current_z, current_d, current_x2, current_y2, current_z2, current_d2, current_motor]
+actions = [target_x,  target_y,  target_z,  target_d,  target_x2,  target_y2,  target_z2,  target_d2,  target_motor]
+```
 
-Script: [examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py](../../examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py)
+Important detail: this integration uses the command logged on the same row as the supervision target. It does not
+shift actions by `t+1`.
+
+If you rename CSV headers, update the column constants at the top of
+[convert_ump_suite_robot_data_to_lerobot.py](../../examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py).
+
+## 2. Convert demonstrations to LeRobot
+
+From the repo root:
 
 ```bash
-# from the repo root
+uv sync
 uv run examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py \
     --data-root /path/to/DATA_ROOT
 ```
 
-Add `--push-to-hub` if you also want to push the dataset to the Hugging Face Hub. See
-[section 2a](#2a-optional-authenticate-with-hugging-face-before-using---push-to-hub) below
-for the one-time auth step.
+Before you run it, confirm these constants in the converter:
 
-Before running, open the script and confirm the top-of-file constants match what you want:
+- `REPO_NAME`: the LeRobot dataset repo id, for example `your_hf_username/ump_suite_robot_dataset`
+- `TASK`: the language instruction stored in every frame
+- `FPS`: the control/recording rate you want reflected in the dataset metadata
 
-- `REPO_NAME = "RaianSilex/ump_suite_robot_dataset"` — must match the `repo_id` used by every
-  TrainConfig in [src/openpi/training/config.py](../../src/openpi/training/config.py).
-- `TASK  = "Move the needle towards the bead"` — the language prompt for every sample.
-- `FPS   = 3` — raise this if your logs were recorded faster and you want to keep the original
-  rate.
+The converter creates a LeRobot dataset with:
 
-The resulting LeRobot dataset is written to `$HF_LEROBOT_HOME/<REPO_NAME>` (default
-`~/.cache/huggingface/lerobot/...`). After this step the raw CSV/PNG layout is no longer needed
-for training.
+- `image`: one RGB frame per step
+- `state`: shape `(9,)`
+- `actions`: shape `(9,)`
+- `task`: the prompt used later during training via `prompt_from_task=True`
 
-### 2a. (Optional) Authenticate with Hugging Face before using `--push-to-hub`
+The output is written to `$HF_LEROBOT_HOME/<REPO_NAME>`.
 
-Pushing to the Hub needs an **access token** (not your password). One-time setup:
+### Optional: push the dataset to Hugging Face Hub
 
-1. Create a token at https://huggingface.co/settings/tokens with **Write** access and copy the
-   `hf_...` string.
-2. Log in locally — this stores the token at `~/.cache/huggingface/token`:
-   ```bash
-   uv run huggingface-cli login
-   ```
-   Paste the token when prompted. You only do this once per machine. Alternatively, export
-   it as an env var for the current shell:
-   ```bash
-   export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxx
-   ```
-3. Make sure `REPO_NAME` in the conversion script starts with **your** username (or an org
-   you belong to). Your own username always works.
+If you want the converter to upload the dataset:
 
-Then rerun the conversion with `--push-to-hub`. The repo is created automatically on first
-push, so there is no need to pre-create it in the web UI. The script pushes with
-`private=True`; flip it to `False` in
-[examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py](../../examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py)
-if you want the dataset public.
+```bash
+uv run huggingface-cli login
+uv run examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py \
+    --data-root /path/to/DATA_ROOT \
+    --push-to-hub
+```
 
----
+Make sure `REPO_NAME` starts with a namespace you control.
 
-## 3. Pick a training config
+## 3. Training configs
 
-All ump_suite configs live in [src/openpi/training/config.py](../../src/openpi/training/config.py).
-Six are pre-defined:
+`ump_suite_robot` is already registered in
+[src/openpi/training/config.py](../../src/openpi/training/config.py).
 
-| Name | Model | Use when |
+Available configs:
+
+| Config | Model | Notes |
 |---|---|---|
-| `pi0_ump_suite_robot` | π₀ full finetune | Best quality, needs most VRAM |
-| `pi0_ump_suite_robot_low_mem_finetune` | π₀ LoRA | π₀ on limited VRAM |
-| `pi0_fast_ump_suite_robot` | π₀-FAST full | Faster, discrete action head |
-| `pi0_fast_ump_suite_robot_low_mem_finetune` | π₀-FAST LoRA | π₀-FAST on limited VRAM |
-| `pi05_ump_suite_robot` | π₀.₅ full | Latest model, trains on absolute actions |
-| `pi05_ump_suite_robot_low_mem_finetune` | π₀.₅ LoRA | π₀.₅ on limited VRAM |
+| `pi0_ump_suite_robot` | pi0 full finetune | Highest memory use |
+| `pi0_ump_suite_robot_low_mem_finetune` | pi0 LoRA | Lower-memory pi0 |
+| `pi0_fast_ump_suite_robot` | pi0-FAST full finetune | Faster autoregressive policy |
+| `pi0_fast_ump_suite_robot_low_mem_finetune` | pi0-FAST LoRA | Lower-memory pi0-FAST |
+| `pi05_ump_suite_robot` | pi0.5 full finetune | Absolute-action recipe |
+| `pi05_ump_suite_robot_low_mem_finetune` | pi0.5 LoRA | Lower-memory pi0.5 |
 
-All six configs output **absolute 5-D poses** at inference, regardless of how they handle deltas
-internally. π₀ and π₀-FAST convert absolute→delta for training and add the state back at
-inference; π₀.₅ uses the absolute actions directly.
+Action handling:
 
----
+- pi0 and pi0-FAST train on deltas here: the config subtracts state from the logged absolute action during training and
+  adds it back at inference.
+- pi0.5 trains directly on absolute actions.
+- All six configs return absolute 9-D actions at inference.
+
+One thing to double-check before training: the `repo_id` in the config entries must match the `REPO_NAME` used by the
+converter.
 
 ## 4. Compute normalization statistics
 
-Run once **per config you plan to train** (the pi0/pi0-fast and pi0.5 recipes produce different
-norm stats because they handle deltas differently):
+Run this once per config you plan to train:
 
 ```bash
-# from the repo root
 uv run scripts/compute_norm_stats.py --config-name pi0_ump_suite_robot
 ```
 
-Stats are saved into the config's assets directory and picked up automatically at train time.
-If training later errors with "missing norm stats", rerun this step for the corresponding config.
+Do this separately for pi0/pi0-FAST vs pi0.5 if you plan to train both, because the action preprocessing differs.
 
----
+## 5. Train a checkpoint
 
-## 5. Train
+Example:
 
 ```bash
-# from the repo root
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-    uv run scripts/train.py pi0_ump_suite_robot \
-        --exp-name=my_first_run \
-        --overwrite
+uv run scripts/train.py pi0_ump_suite_robot \
+    --exp-name=my_first_run \
+    --overwrite
 ```
 
-- `pi0_ump_suite_robot` is the config name — swap it for any of the six configs above.
-- `--exp-name` is your run name; checkpoints are saved to
-  `checkpoints/<config_name>/<exp_name>/<step>`.
-- `--overwrite` replaces any existing checkpoints for the same config + exp-name. Omit this
-  flag to resume an interrupted run.
-- W&B logging is on by default (set `WANDB_MODE=disabled` to turn it off).
+Notes:
 
-For LoRA configs you typically do not need `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9`.
+- Checkpoints are written to `checkpoints/<config_name>/<exp_name>/<step>`.
+- Omit `--overwrite` if you want to preserve an existing run directory.
+- Set `WANDB_MODE=disabled` if you do not want Weights & Biases logging.
+- The full finetune configs are much heavier than the LoRA variants.
 
----
+## 6. Serve the trained model
 
-## 6. Serve the trained policy
+Example:
 
 ```bash
-# from the repo root
 uv run scripts/serve_policy.py policy:checkpoint \
     --policy.config=pi0_ump_suite_robot \
     --policy.dir=checkpoints/pi0_ump_suite_robot/my_first_run/29999
 ```
 
-This spins up a websocket policy server on port 8000. Point your ROS 2 `ump_suite` client at
-`ws://<host>:8000` and send observations in the format produced by the policy's input transform:
+This starts the websocket policy server on port `8000`.
+
+Your robot runtime should send observations shaped like:
 
 ```python
 {
-    "observation/image": <H, W, 3 uint8>,   # base camera frame, any resolution (resized to 224)
-    "observation/state": <9,  float32>,      # current [x1, y1, z1, d1, x2, y2, z2, d2, h]
-    "prompt":            "Move the needle towards the bead",
+    "observation/image": <H, W, 3 uint8>,
+    "observation/state": <9 float32>,
+    "prompt": "Move the needle towards the bead",
 }
 ```
 
-The server responds with `{"actions": <action_horizon, 9> float32}` — a chunk of absolute next
-poses. Use the first one (or roll through the whole chunk at your control rate) as the command
-to the dual-micromanipulator rig.
-
-A minimal Python example of calling a policy server from your own runtime lives in
-[docs/remote_inference.md](../../docs/remote_inference.md).
-
----
-
-# Adapting this pipeline to your own robot
-
-The ump_suite integration is ~150 lines spread across three files. To onboard **any robot**
-(placeholder name: `my_robot`) you clone that same three-file pattern. Everywhere below, replace
-`my_robot` / `MyRobot` with your own name — lowercase-with-underscores for file and config
-names, CamelCase for class names.
-
-## Step 1 — Write your data conversion script
-
-Create `examples/my_robot/convert_my_robot_data_to_lerobot.py` (new folder + file).
-
-Easiest path: copy
-[examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py](../../examples/ump_suite_robot/convert_ump_suite_robot_data_to_lerobot.py)
-and edit:
+The response is:
 
 ```python
-REPO_NAME = "<your_hf_username>/my_robot_dataset"   # used everywhere as repo_id
-COLS      = ["joint1", "joint2", ...]               # columns in your CSV that make up state/action
-TASK      = "<your language instruction>"
-FPS       = <your recording rate>
+{"actions": <action_horizon, 9 float32>}
 ```
 
-Inside the `LeRobotDataset.create(...)` call, set `features` to your real shapes:
+Those are absolute actions in the same 9-D layout as the demonstrations. In most runtimes you either:
 
-```python
-features={
-    "image":   {"dtype": "image",   "shape": (H, W, 3), "names": ["height", "width", "channel"]},
-    "state":   {"dtype": "float32", "shape": (<STATE_DIM>,), "names": ["state"]},
-    "actions": {"dtype": "float32", "shape": (<ACTION_DIM>,), "names": ["actions"]},
-    # Add "wrist_image" (or more) if your robot has extra cameras.
-},
-```
+- execute only the first action, then re-query the policy
+- execute a short prefix of the chunk at your control rate, then re-query
 
-Then adapt the frame loop to read **your** raw data (TFDS episodes, rosbags, HDF5, whatever)
-and call `ds.add_frame({...})` per timestep and `ds.save_episode()` per episode.
+For a minimal client example, see [docs/remote_inference.md](../../docs/remote_inference.md).
 
-## Step 2 — Write your policy input/output transforms
+## End-to-end summary for this robot
 
-Create `src/openpi/policies/my_robot_policy.py`. Copy
+From demonstrations to live inference, the data path is:
+
+1. The robot logger writes `trial_*.csv` files plus image paths.
+2. The converter reads those files and creates a LeRobot dataset with `image`, `state`, `actions`, and `task`.
+3. `prompt_from_task=True` turns the LeRobot `task` into the model `prompt` during training.
+4. The ump suite data config repacks dataset fields into inference-style keys.
+5. The policy transform converts that into the model input schema and slices the model output back to 9 dimensions.
+6. `serve_policy.py` loads the trained checkpoint and exposes it over websocket.
+7. The robot runtime sends live `observation/image`, `observation/state`, and `prompt`, then executes returned actions.
+
+## How to add a new custom robot
+
+The cleanest way is to copy the `ump_suite_robot` pattern and replace only the robot-specific parts.
+
+### Step 1: write a LeRobot conversion script
+
+Create `examples/my_robot/convert_my_robot_data_to_lerobot.py`.
+
+Use the ump suite converter as a template:
+
+- choose a `REPO_NAME`
+- define your dataset features
+- map your raw logs into `image`, `state`, `actions`, and `task`
+- call `ds.add_frame(...)` once per timestep
+- call `ds.save_episode()` once per episode
+
+Your demonstrations can come from CSV, HDF5, rosbags, RLDS, or anything else. The important part is the final LeRobot
+dataset schema that `openpi` will train on.
+
+### Step 2: write policy transforms
+
+Create `src/openpi/policies/my_robot_policy.py`.
+
+Use
 [src/openpi/policies/ump_suite_robot_policy.py](../../src/openpi/policies/ump_suite_robot_policy.py)
-and change:
+as the template.
 
-1. Class names: `UmpSuiteRobotInputs` → `MyRobotInputs`, `UmpSuiteRobotOutputs` → `MyRobotOutputs`.
-2. **Inputs.** In `__call__`, read whatever image / state keys your dataset uses. π₀ models
-   accept up to three cameras: `base_0_rgb`, `left_wrist_0_rgb`, `right_wrist_0_rgb`. Fill the
-   ones you have, zero-fill the rest, and mask missing cameras `False` for π₀ and π₀.₅, `True`
-   for π₀-FAST (see the existing comment in the file).
-3. **Outputs.** Change the final slice:
-   ```python
-   return {"actions": np.asarray(data["actions"][:, :<ACTION_DIM>])}
-   ```
-   This undoes the padding that `PadStatesAndActions` added at training/inference time. It
-   must match your robot's real action dimension.
+Your input transform should:
 
-## Step 3 — Register a data config and training configs
+- read your observation keys
+- convert images to `uint8` HWC if needed
+- build the `image` dict expected by the model
+- build the `image_mask` dict
+- pass through `state`
+- optionally pass through `actions` during training
+- pass through `prompt`
 
-Open [src/openpi/training/config.py](../../src/openpi/training/config.py) and do three things:
+Your output transform should:
 
-**a) Import your policy** near the top (next to the `ump_suite_robot_policy` import):
+- slice the model action output back to your robot's true action dimension
 
-```python
-import openpi.policies.my_robot_policy as my_robot_policy
-```
+### Step 3: register a data config
 
-**b) Add a `LeRobotMyRobotDataConfig` class.** Copy `LeRobotUmpSuiteRobotDataConfig` in the same
-file and change:
+In [src/openpi/training/config.py](../../src/openpi/training/config.py):
 
-- The class name to `LeRobotMyRobotDataConfig`.
-- The `RepackTransform` dict keys to map **your** LeRobot dataset keys → the keys your policy
-  inputs class reads (e.g. `"observation/image": "image"` means "take the `image` column from
-  the dataset and expose it under the `observation/image` key"). If you have a wrist camera,
-  add `"observation/wrist_image": "wrist_image"`.
-- `inputs=[my_robot_policy.MyRobotInputs(...)]` and
-  `outputs=[my_robot_policy.MyRobotOutputs()]`.
-- `_transforms.make_bool_mask(<ACTION_DIM>)` to match your action dimension — or use the
-  `(n, -m, k)` form from
-  [transforms.py:make_bool_mask](../../src/openpi/transforms.py) if some dims (e.g. a gripper)
-  should stay absolute while the rest become deltas.
+1. import your new policy module
+2. add a `LeRobotMyRobotDataConfig`
+3. map LeRobot dataset fields to inference-style keys with `RepackTransform`
+4. attach your input/output policy transforms
+5. add delta-action logic only if your raw actions are absolute and your model recipe expects deltas
 
-**c) Add `TrainConfig` entries to `_CONFIGS`.** Copy the six `*_ump_suite_robot*` entries at the
-bottom of the file and change:
+The `LeRobotUmpSuiteRobotDataConfig` class is the reference example.
 
-- `name="pi0_my_robot"` (and the other five variants).
-- `data=LeRobotMyRobotDataConfig(repo_id="<your_hf_username>/my_robot_dataset", ...)`.
-- For π₀-FAST, set `action_dim=<ACTION_DIM>` and pick an `action_horizon` (10 is a good
-  starting point for single-arm robots) and `max_token_len` (180 for single-arm, 250 for
-  bimanual).
-- For π₀ full and LoRA, set `action_horizon` to something compatible with your episode length
-  and control rate. Every training sample needs `action_horizon` consecutive frames from the
-  same episode.
-- Decide `use_delta_actions`:
-  - π₀ / π₀-FAST with **absolute raw actions** → `True` (converts to delta for training, back
-    to absolute at inference).
-  - π₀ / π₀-FAST with **already-delta raw actions** → `False`.
-  - π₀.₅ → `False` (the π₀.₅ recipe trains on absolute actions directly).
+### Step 4: add train configs
 
-## Step 4 — Run the pipeline
+Still in `config.py`, add one or more `TrainConfig` entries for your robot.
 
-From the repo root:
+You typically need to set:
+
+- `repo_id`
+- model family (`pi0`, `pi0-FAST`, or `pi0.5`)
+- `action_dim` for pi0-FAST
+- `action_horizon`
+- LoRA vs full finetune choice
+- whether to reuse existing normalization stats or compute new ones
+
+### Step 5: run the pipeline
 
 ```bash
-# 1. Convert your data to LeRobot format
 uv run examples/my_robot/convert_my_robot_data_to_lerobot.py --data-root /path/to/raw
-
-# 2. Compute norm stats (once per config you plan to train)
 uv run scripts/compute_norm_stats.py --config-name pi0_my_robot
-
-# 3. Train
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
-    uv run scripts/train.py pi0_my_robot --exp-name=first_run --overwrite
-
-# 4. Serve
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py pi0_my_robot --exp-name=first_run --overwrite
 uv run scripts/serve_policy.py policy:checkpoint \
     --policy.config=pi0_my_robot \
     --policy.dir=checkpoints/pi0_my_robot/first_run/29999
 ```
 
-## Step 5 — Wire the policy server into your robot
+### Step 6: connect your runtime
 
-Your robot's control loop should, at each control step:
+Your robot control loop should:
 
-1. Capture the current state and camera frame(s).
-2. Build a dict shaped exactly like the output of your `MyRobotInputs` transform
-   (same keys, same dtypes).
-3. Send it to the policy server.
-4. Apply the returned `actions` chunk (usually the first action, or step through the chunk at
-   your control rate).
+1. capture the current observation
+2. format it exactly the way your policy input transform expects
+3. send it to the websocket server
+4. receive `actions`
+5. execute those actions on the robot
 
-A minimal client example is in [docs/remote_inference.md](../../docs/remote_inference.md).
+If the training dataset keys and runtime inference keys stay semantically aligned, the rest of the openpi pipeline stays
+fairly small and reusable.
 
----
+## Practical checklist
 
-## Checklist before kicking off a run
-
-- [ ] `REPO_NAME` in the conversion script matches `repo_id` in every TrainConfig.
-- [ ] State dim and action dim match between: raw data, conversion features, policy
-      output slice, and (for π₀-FAST) `action_dim` in the model config.
-- [ ] `make_bool_mask(...)` in the data config has the right length.
-- [ ] Episodes are at least `action_horizon` frames long.
-- [ ] Ran `compute_norm_stats.py` for the config you are about to train.
-- [ ] `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9` set for full finetunes on a single GPU.
+- `REPO_NAME` in the converter matches `repo_id` in the training config.
+- State dimension matches everywhere.
+- Action dimension matches everywhere.
+- The action ordering is identical in logs, conversion, transforms, and runtime.
+- Episodes are at least as long as `action_horizon`.
+- `scripts/compute_norm_stats.py` has been run for the config you plan to train.
+- The robot runtime sends the same observation semantics that the training pipeline used.
