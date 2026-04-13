@@ -216,7 +216,7 @@ From demonstrations to live inference, the data path is:
 
 The cleanest way is to copy the `ump_suite_robot` pattern and replace only the robot-specific parts.
 
-### Step 1: write a LeRobot conversion script
+### Step 1: Write a LeRobot conversion script
 
 Create `examples/my_robot/convert_my_robot_data_to_lerobot.py`.
 
@@ -231,7 +231,7 @@ Use the ump suite converter as a template:
 Your demonstrations can come from CSV, HDF5, rosbags, RLDS, or anything else. The important part is the final LeRobot
 dataset schema that `openpi` will train on.
 
-### Step 2: write policy transforms
+### Step 2: Write policy transforms
 
 Create `src/openpi/policies/my_robot_policy.py`.
 
@@ -253,7 +253,7 @@ Your output transform should:
 
 - slice the model action output back to your robot's true action dimension
 
-### Step 3: register a data config
+### Step 3: Register a data config
 
 In [src/openpi/training/config.py](../../src/openpi/training/config.py):
 
@@ -265,7 +265,7 @@ In [src/openpi/training/config.py](../../src/openpi/training/config.py):
 
 The `LeRobotUmpSuiteRobotDataConfig` class is the reference example.
 
-### Step 4: add train configs
+### Step 4: Add train configs
 
 Still in `config.py`, add one or more `TrainConfig` entries for your robot.
 
@@ -278,7 +278,7 @@ You typically need to set:
 - LoRA vs full finetune choice
 - whether to reuse existing normalization stats or compute new ones
 
-### Step 5: run the pipeline
+### Step 5: Run the pipeline
 
 ```bash
 uv run examples/my_robot/convert_my_robot_data_to_lerobot.py --data-root /path/to/raw
@@ -289,7 +289,7 @@ uv run scripts/serve_policy.py policy:checkpoint \
     --policy.dir=checkpoints/pi0_my_robot/first_run/29999
 ```
 
-### Step 6: connect your runtime
+### Step 6: Connect your runtime
 
 Your robot control loop should:
 
