@@ -245,6 +245,32 @@ class AbsoluteActions(DataTransformFn):
 
 
 @dataclasses.dataclass(frozen=True)
+class ScaleActions(DataTransformFn):
+    """Divides delta actions by a scale factor (e.g., step size)."""
+
+    scale: float
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "actions" not in data or self.scale == 0:
+            return data
+        data["actions"] = data["actions"] / self.scale
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
+class UnscaleActions(DataTransformFn):
+    """Multiplies delta actions by a scale factor (inverse of ScaleActions)."""
+
+    scale: float
+
+    def __call__(self, data: DataDict) -> DataDict:
+        if "actions" not in data:
+            return data
+        data["actions"] = data["actions"] * self.scale
+        return data
+
+
+@dataclasses.dataclass(frozen=True)
 class TokenizePrompt(DataTransformFn):
     tokenizer: _tokenizer.PaligemmaTokenizer
     discrete_state_input: bool = False

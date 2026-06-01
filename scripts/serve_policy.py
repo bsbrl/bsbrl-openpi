@@ -18,6 +18,7 @@ class EnvMode(enum.Enum):
     ALOHA_SIM = "aloha_sim"
     DROID = "droid"
     LIBERO = "libero"
+    SENSAPEX = "sensapex"
 
 
 @dataclasses.dataclass
@@ -72,6 +73,11 @@ DEFAULT_CHECKPOINT: dict[EnvMode, Checkpoint] = {
     EnvMode.LIBERO: Checkpoint(
         config="pi05_libero",
         dir="gs://openpi-assets/checkpoints/pi05_libero",
+    ),
+    EnvMode.SENSAPEX: Checkpoint(
+        # config must match the checkpoint dir below (was mismatched: pi05 config + pi0 dir).
+        config="pi0_sensapex_low_mem_finetune",
+        dir="checkpoints/pi0_sensapex_low_mem_finetune/my_experiment/29999",
     ),
 }
 

@@ -1,3 +1,31 @@
+# choicelab_openpi
+
+This is a private fork of the public openpi repo used for development. This was created using the process outlined here:
+https://gist.github.com/0xjac/85097472043b697ab57ba1b1c7530274
+
+To get it working on your machine:
+```bash
+# Pull our version of the repo
+git clone git@github.com:choicelab/choicelab_openpi.git
+
+# Pull submodules
+git submodule update --init --recursive
+```
+
+Next, you'll need to get a Python environment working. 
+```bash
+# Install UV from Astral
+# https://docs.astral.sh/uv/getting-started/installation/
+# I used the pipx installation
+pipx install uv
+
+# Set up the environment using Astral
+GIT_LFS_SKIP_SMUDGE=1 uv sync
+GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
+```
+
+See further details below in the official openpi documentation if you're having issues.
+
 # openpi
 
 openpi holds open-source models and packages for robotics, published by the [Physical Intelligence team](https://www.physicalintelligence.company/).
@@ -182,10 +210,15 @@ If you want to embed a policy server call in your own robot runtime, we have a m
 
 ### More Examples
 
-We provide more examples for how to fine-tune and run inference with our models on the ALOHA platform in the following READMEs:
-- [ALOHA Simulator](examples/aloha_sim)
-- [ALOHA Real](examples/aloha_real)
-- [UR5](examples/ur5)
+This fork is trimmed for the Sensapex micromanipulator rig. The end-to-end example
+(data conversion, fine-tuning, and real-time inference) lives here:
+- [Sensapex](examples/sensapex)
+
+For testing inference without a robot, see [simple_client](examples/simple_client).
+
+> Note: the upstream openpi fine-tuning walkthrough above uses LIBERO/DROID/ALOHA as
+> running examples. Those robot example folders have been removed from this fork, but
+> the same steps apply to the Sensapex configs (see the [Sensapex README](examples/sensapex/README.md)).
 
 ## PyTorch Support
 

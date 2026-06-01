@@ -13,7 +13,6 @@ import flax.nnx as nnx
 from typing_extensions import override
 import tyro
 
-import openpi.policies.ump_suite_robot_policy as ump_suite_robot_policy
 import openpi.models.model as _model
 import openpi.models.pi0_config as pi0_config
 import openpi.models.pi0_fast as pi0_fast
@@ -21,6 +20,9 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+
+# Modification for sensapex
+import openpi.policies.sensapex_policy as sensapex_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -423,40 +425,6 @@ class RLDSDroidDataConfig(DataConfigFactory):
             datasets=self.datasets,
         )
 
-@dataclasses.dataclass(frozen=True)
-class LeRobotUmpSuiteRobotDataConfig(DataConfigFactory):
-    # True => subtract state from action at train time, so the model learns deltas.
-    # Your raw data stores absolute-next-pose actions, so True is the π₀-recommended setting.
-    use_delta_actions: bool = True
-
-    @override
-    def create(self, assets_dirs, model_config):
-        repack_transform = _transforms.Group(
-            inputs=[_transforms.RepackTransform({
-                "observation/image": "image",
-                "observation/state": "state",
-                "actions":           "actions",
-                "prompt":            "prompt",
-            })]
-        )
-        data_transforms = _transforms.Group(
-            inputs=[ump_suite_robot_policy.UmpSuiteRobotInputs(model_type=model_config.model_type)],
-            outputs=[ump_suite_robot_policy.UmpSuiteRobotOutputs()],
-        )
-        if self.use_delta_actions:
-            mask = _transforms.make_bool_mask(9)  # all 9 dims are deltas
-            data_transforms = data_transforms.push(
-                inputs=[_transforms.DeltaActions(mask)],
-                outputs=[_transforms.AbsoluteActions(mask)],
-            )
-        model_transforms = ModelTransformFactory()(model_config)
-        return dataclasses.replace(
-            self.create_base_config(assets_dirs, model_config),
-            repack_transforms=repack_transform,
-            data_transforms=data_transforms,
-            model_transforms=model_transforms,
-        )
-
 
 @dataclasses.dataclass(frozen=True)
 class LeRobotDROIDDataConfig(DataConfigFactory):
@@ -489,6 +457,67 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
         )
         model_transforms = ModelTransformFactory()(model_config)
 
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotSensapexDataConfig(DataConfigFactory):
+    """
+    This config is used to configure transforms that are applied at various parts of the data pipeline.
+    For your own dataset, you can copy this class and modify the transforms to match your dataset based on the
+    comments below.
+    """
+
+    abs_to_delta: bool = True  # Dataset uses absolute actions; Pi0 expects delta actions
+    step_size: int = 50 # Step size (micrometer) of the task
+    
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "image",
+                        "observation/state": "state",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[sensapex_policy.SensapexInputs(model_type=model_config.model_type)],
+            outputs=[sensapex_policy.SensapexOutputs()],
+        )
+
+        # Convert absolute actions to delta for Pi0 (which expects delta actions internally).
+        # The dual-uMp rig is 8-DoF: [x1, y1, z1, d1, x2, y2, z2, d2].
+        if self.abs_to_delta:
+            delta_action_mask = _transforms.make_bool_mask(8)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        # Normalize delta actions by the step size so the model learns direction (integer-like steps).
+        # Z-score normalization downstream handles any remaining centering/scaling.
+        if self.step_size > 0:
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.ScaleActions(scale=float(self.step_size))],
+                outputs=[_transforms.UnscaleActions(scale=float(self.step_size))],
+            )
+
+        # Model transforms include things like tokenizing the prompt and action targets
+        # You do not need to change anything here for your own dataset.
+        model_transforms = ModelTransformFactory()(model_config)
+
+        # We return all data transforms for training and inference. No need to change anything here.
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=repack_transform,
@@ -951,119 +980,140 @@ _CONFIGS = [
         num_train_steps=20_000,
         batch_size=32,
     ),
-
-    # ---- pi0 full ----
+    #
+    # Fine-tuning Sensapex configs.
+    #
     TrainConfig(
-        name="pi0_ump_suite_robot",
+        # Change the name to reflect your model and dataset.
+        name="pi0_sensapex",
+        # Here you define the model config -- In this example we use pi0 as the model
+        # architecture and perform *full* finetuning. in the examples below we show how to modify
+        # this to perform *low-memory* (LORA) finetuning and use pi0-FAST as an alternative architecture.
         model=pi0_config.Pi0Config(action_horizon=10),
-        data=LeRobotUmpSuiteRobotDataConfig(
+        # Here you define the dataset you are training on. In this example we use the Sensapex
+        # dataset. For your own dataset, you can change the repo_id to point to your dataset.
+        # Also modify the DataConfig to use the new config you made for your dataset above.
+        data=LeRobotSensapexDataConfig(
             repo_id="RaianSilex/ump_suite_robot_dataset",
-            base_config=DataConfig(prompt_from_task=True),
-            use_delta_actions=True,
+            base_config=DataConfig(
+                # This flag determines whether we load the prompt (i.e. the task instruction) from the
+                # ``task`` field in the LeRobot dataset. If set to True, the prompt will show up in
+                # a field called ``prompt`` in the input dict. The recommended setting is True.
+                prompt_from_task=True,
+            ),
         ),
+        # Here you define which pre-trained checkpoint you want to load to initialize the model.
+        # This should match the model config you chose above -- i.e. in this case we use the pi0 base model.
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        # Below you can define other hyperparameters like the learning rate, number of training steps, etc.
+        # Check the base TrainConfig class for a full list of available hyperparameters.
         num_train_steps=30_000,
     ),
-
-    # ---- pi0 LoRA ----
     TrainConfig(
-        name="pi0_ump_suite_robot_low_mem_finetune",
+        name="pi0_sensapex_low_mem_finetune",
+        # Here is an example of loading a pi0 model for LoRA fine-tuning.
         model=pi0_config.Pi0Config(
-            action_horizon=10,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
+            action_horizon=10, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
         ),
-        data=LeRobotUmpSuiteRobotDataConfig(
+        data=LeRobotSensapexDataConfig(
             repo_id="RaianSilex/ump_suite_robot_dataset",
             base_config=DataConfig(prompt_from_task=True),
-            use_delta_actions=True,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         num_train_steps=30_000,
         freeze_filter=pi0_config.Pi0Config(
-            action_horizon=10,
-            paligemma_variant="gemma_2b_lora",
-            action_expert_variant="gemma_300m_lora",
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
         ).get_freeze_filter(),
-        ema_decay=None,  # disable EMA for LoRA
+        ema_decay=None,
     ),
-
-    # ---- pi0-FAST full ----
     TrainConfig(
-        name="pi0_fast_ump_suite_robot",
-        # action_dim, action_horizon, max_token_len: see comments in config.py near pi0_fast_libero
-        model=pi0_fast.Pi0FASTConfig(action_dim=9, action_horizon=10, max_token_len=180),
-        data=LeRobotUmpSuiteRobotDataConfig(
+        name="pi0_fast_sensapex",
+        # Here is an example of loading a pi0-FAST model for full finetuning.
+        # Modify action_dim and action_horizon to match your dataset (action horizon is equal to
+        # the desired action chunk length).
+        # The max_token_len is the maximum number of (non-image) tokens the model can handle.
+        # This includes the tokenized prompt, proprioceptive state, and (FAST-tokenized) action tokens.
+        # Choosing this value too small may chop off tokens at the end of your sequence (the code will throw
+        # a warning), while choosing it too large will waste memory (since we pad each batch element to the
+        # max_token_len). A good rule of thumb is to use approx 180 for single-arm robots, and approx 250 for
+        # two-arm robots. Generally, err on the lower side here first, and potentially increase the value if
+        # you see many warnings being thrown during training.
+        model=pi0_fast.Pi0FASTConfig(action_dim=8, action_horizon=10, max_token_len=180),
+        data=LeRobotSensapexDataConfig(
             repo_id="RaianSilex/ump_suite_robot_dataset",
             base_config=DataConfig(prompt_from_task=True),
-            use_delta_actions=True,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
         num_train_steps=30_000,
     ),
-
-    # ---- pi0-FAST LoRA ----
     TrainConfig(
-        name="pi0_fast_ump_suite_robot_low_mem_finetune",
+        name="pi0_fast_sensapex_low_mem_finetune",
+        # Here is an example of loading a pi0-FAST model for LoRA finetuning.
+        # For setting action_dim, action_horizon, and max_token_len, see the comments above.
         model=pi0_fast.Pi0FASTConfig(
-            action_dim=9, action_horizon=10, max_token_len=180,
-            paligemma_variant="gemma_2b_lora",
+            action_dim=8, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
         ),
-        data=LeRobotUmpSuiteRobotDataConfig(
+        data=LeRobotSensapexDataConfig(
             repo_id="RaianSilex/ump_suite_robot_dataset",
             base_config=DataConfig(prompt_from_task=True),
-            use_delta_actions=True,
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
         num_train_steps=30_000,
         freeze_filter=pi0_fast.Pi0FASTConfig(
-            action_dim=9, action_horizon=10, max_token_len=180,
-            paligemma_variant="gemma_2b_lora",
+            action_dim=8, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
         ).get_freeze_filter(),
+        # Turn off EMA for LoRA finetuning.
         ema_decay=None,
     ),
-
-    # ---- pi0.5 full ----
     TrainConfig(
-        name="pi05_ump_suite_robot",
+        name="pi05_sensapex",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
-        data=LeRobotUmpSuiteRobotDataConfig(
+        data=LeRobotSensapexDataConfig(
             repo_id="RaianSilex/ump_suite_robot_dataset",
             base_config=DataConfig(prompt_from_task=True),
-            use_delta_actions=False,  # pi0.5 recipe trains on absolute actions
         ),
-        batch_size=256,  # drop this if you don't have an 80GB GPU
+        batch_size=256,
         lr_schedule=_optimizer.CosineDecaySchedule(
-            warmup_steps=10_000, peak_lr=5e-5,
-            decay_steps=1_000_000, decay_lr=5e-5,
+            warmup_steps=10_000,
+            peak_lr=5e-5,
+            decay_steps=1_000_000,
+            decay_lr=5e-5,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=0.999,
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        # pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
     ),
-
-    # ---- pi0.5 LoRA ----
     TrainConfig(
-        name="pi05_ump_suite_robot_low_mem_finetune",
+        name="pi0.5_sensapex_low_mem_finetune",
+        # Here is an example of loading a pi0.5 model for LoRA finetuning.
+        # For setting action_dim, action_horizon, and max_token_len, see the comments above.
         model=pi0_config.Pi0Config(
-            pi05=True, action_horizon=10, discrete_state_input=False,
-            max_token_len=180, paligemma_variant="gemma_2b_lora",
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
         ),
-        data=LeRobotUmpSuiteRobotDataConfig(
+        data=LeRobotSensapexDataConfig(
             repo_id="RaianSilex/ump_suite_robot_dataset",
             base_config=DataConfig(prompt_from_task=True),
-            use_delta_actions=False,  # pi0.5 recipe trains on absolute actions
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=30_000,
+        # Again, make sure to match the model config above when extracting the freeze filter
+        # that specifies which parameters should be frozen during LoRA finetuning.
         freeze_filter=pi0_config.Pi0Config(
-            pi05=True, action_horizon=10, discrete_state_input=False,
-            max_token_len=180, paligemma_variant="gemma_2b_lora",
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            max_token_len=180,
+            paligemma_variant="gemma_2b_lora",
         ).get_freeze_filter(),
+        # Turn off EMA for LoRA finetuning.
         ema_decay=None,
     ),
-
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
     #
