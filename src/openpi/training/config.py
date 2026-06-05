@@ -478,13 +478,19 @@ class LeRobotSensapexDataConfig(DataConfigFactory):
     
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Source keys (right-hand side) are the feature names in the LeRobot dataset.
+        # This dataset (RaianSilex/ump_robot_dataset_137_episodes_lerobotv21) was built
+        # with the standard LeRobot schema, so the action/state/image live under
+        # "action" / "observation.state" / "observation.images.cam_main" (not the flat
+        # "actions" / "state" / "image" the in-repo converter emits). "prompt" is added
+        # before this transform by PromptFromLeRobotTask (prompt_from_task=True).
         repack_transform = _transforms.Group(
             inputs=[
                 _transforms.RepackTransform(
                     {
-                        "observation/image": "image",
-                        "observation/state": "state",
-                        "actions": "actions",
+                        "observation/image": "observation.images.cam_main",
+                        "observation/state": "observation.state",
+                        "actions": "action",
                         "prompt": "prompt",
                     }
                 )
@@ -518,11 +524,15 @@ class LeRobotSensapexDataConfig(DataConfigFactory):
         model_transforms = ModelTransformFactory()(model_config)
 
         # We return all data transforms for training and inference. No need to change anything here.
+        # action_sequence_keys must name the action feature *as stored in the dataset* so the
+        # loader can stack the action_horizon chunk via delta_timestamps. This dataset stores it
+        # under "action" (standard LeRobot schema), not the default "actions".
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+            action_sequence_keys=("action",),
         )
 
 
@@ -994,7 +1004,7 @@ _CONFIGS = [
         # dataset. For your own dataset, you can change the repo_id to point to your dataset.
         # Also modify the DataConfig to use the new config you made for your dataset above.
         data=LeRobotSensapexDataConfig(
-            repo_id="RaianSilex/ump_suite_robot_dataset",
+            repo_id="RaianSilex/ump_robot_dataset_137_episodes_lerobotv21",
             base_config=DataConfig(
                 # This flag determines whether we load the prompt (i.e. the task instruction) from the
                 # ``task`` field in the LeRobot dataset. If set to True, the prompt will show up in
@@ -1016,7 +1026,7 @@ _CONFIGS = [
             action_horizon=10, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
         ),
         data=LeRobotSensapexDataConfig(
-            repo_id="RaianSilex/ump_suite_robot_dataset",
+            repo_id="RaianSilex/ump_robot_dataset_137_episodes_lerobotv21",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
@@ -1040,7 +1050,7 @@ _CONFIGS = [
         # you see many warnings being thrown during training.
         model=pi0_fast.Pi0FASTConfig(action_dim=8, action_horizon=10, max_token_len=180),
         data=LeRobotSensapexDataConfig(
-            repo_id="RaianSilex/ump_suite_robot_dataset",
+            repo_id="RaianSilex/ump_robot_dataset_137_episodes_lerobotv21",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
@@ -1054,7 +1064,7 @@ _CONFIGS = [
             action_dim=8, action_horizon=10, max_token_len=180, paligemma_variant="gemma_2b_lora"
         ),
         data=LeRobotSensapexDataConfig(
-            repo_id="RaianSilex/ump_suite_robot_dataset",
+            repo_id="RaianSilex/ump_robot_dataset_137_episodes_lerobotv21",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_fast_base/params"),
@@ -1069,7 +1079,7 @@ _CONFIGS = [
         name="pi05_sensapex",
         model=pi0_config.Pi0Config(pi05=True, action_horizon=10, discrete_state_input=False),
         data=LeRobotSensapexDataConfig(
-            repo_id="RaianSilex/ump_suite_robot_dataset",
+            repo_id="RaianSilex/ump_robot_dataset_137_episodes_lerobotv21",
             base_config=DataConfig(prompt_from_task=True),
         ),
         batch_size=256,
@@ -1097,7 +1107,7 @@ _CONFIGS = [
             paligemma_variant="gemma_2b_lora",
         ),
         data=LeRobotSensapexDataConfig(
-            repo_id="RaianSilex/ump_suite_robot_dataset",
+            repo_id="RaianSilex/ump_robot_dataset_137_episodes_lerobotv21",
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
