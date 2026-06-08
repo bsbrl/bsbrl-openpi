@@ -152,7 +152,9 @@ Runs:
 
 1. ROS2 Humble
 2. ump_suite package (both uMps and the camera node)
-3. examples/sensapex/main.py
+3. `examples/sensapex/main.py` from this repo — the OpenPI client. It is **not** a ros2 node and is
+   **not** run with `uv run`; launch it from a ROS-sourced Python that also has `openpi-client`
+   installed (see Instructions → Terminal 3).
 
 Responsibilities
 
@@ -232,61 +234,64 @@ source ~/ros2_ws/install/setup.bash
 ros2 launch ump_suite app.launch.py
 ```
 
-**Terminal 2**
+**Terminal 2 — policy server** (GPU machine; uses the openpi `uv` env, no ROS needed)
 
 ```bash
-cd ~/choicelab_openpi
-```
-```bash
+cd ~/bsbrl-openpi
 uv run scripts/serve_policy.py \
   --env SENSAPEX \
   --port 8000 \
   --default-prompt "Move the needles towards the bead" \
   policy:checkpoint \
-  --policy.config pi0_fast_sensapex \
-  --policy.dir ~/openpi_models/sensapex_finetuned_models/pi0_FAST/v4/20000
+  --policy.config pi0_sensapex_low_mem_finetune \
+  --policy.dir ~/openpi_models/pi0_sensapex_lora/30000
 ```
-Wait until seeing:
+Change `--policy.config` to the config you trained and `--policy.dir` to your checkpoint **step**
+directory (the full step dir, which contains `params/` + `assets/` norm-stats). Wait until:
 
 ```bash
 server listening on 0.0.0.0:8000
 ```
-**Terminal 3**
+
+**Terminal 3 — the client** `examples/sensapex/main.py` (Robot PC)
+
+`sensapex_env.py` uses `rclpy`, so the client needs **both** ROS (`rclpy`, `sensor_msgs`,
+`std_msgs`) **and** `openpi_client` / `tyro` in the *same* Python. It therefore **cannot** run under
+`uv run` (no `rclpy`) or in a bare ROS shell (no `openpi_client`). Install the client into your ROS
+Python **once**:
 
 ```bash
-cd ~/ros2_ws
+source /opt/ros/humble/setup.bash
+pip install --user -e ~/bsbrl-openpi/packages/openpi-client tyro pillow
+# if pip refuses (externally-managed-environment): add --break-system-packages, or use an isolated venv:
+#   python3 -m venv --system-site-packages ~/.venvs/sensapex_client
+#   source ~/.venvs/sensapex_client/bin/activate && pip install -e ~/bsbrl-openpi/packages/openpi-client tyro pillow
+```
 
+Then run it as a **module** from the repo root (`main.py` does `from .sensapex_env import …`, so
+`python3 main.py` fails on the relative import):
+
+```bash
 source /opt/ros/humble/setup.bash
 source ~/ros2_ws/install/setup.bash
+# if you used the venv: source ~/.venvs/sensapex_client/bin/activate
+cd ~/bsbrl-openpi
+python3 -m examples.sensapex.main \
+  --remote-host 127.0.0.1 --remote-port 8000 \
+  --open-loop-horizon 8 --max-timesteps 600 \
+  --resize-h 224 --resize-w 224 --default-speed 100
 ```
-
-```bash
-python3 -m ump_suite.main \
-  --remote_host 127.0.0.1 \
-  --remote_port 8000 \
-  --open_loop_horizon 8 \
-  --max_timesteps 600 \
-  --resize_h 224 \
-  --resize_w 224 \
-  --default_speed 100
-```
-Next:
+The instruction is entered **at runtime** (not a flag); type it at the prompt (`q` + Enter e-stops):
 
 ```bash
 [sensapex] Live preview will be saved to: sensapex_live.png
-Enter instruction:
-```
-
-Type:
-
-```bash
-Move the needles towards the bead
+Enter instruction: Move the needles towards the bead
 ```
 
 ### How to check config names: ###
 
 ```bash
-cd ~/choicelab_openpi
+cd ~/bsbrl-openpi
 
 rg -n "name=\".*sensapex" src/openpi/training/config.py
 ```
