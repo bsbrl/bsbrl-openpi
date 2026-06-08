@@ -1,28 +1,6 @@
-# choicelab_openpi
+# BSBRL-OpenPI
 
-This is a private fork of the public openpi repo used for development. This was created using the process outlined here:
-https://gist.github.com/0xjac/85097472043b697ab57ba1b1c7530274
-
-To get it working on your machine:
-```bash
-# Pull our version of the repo
-git clone git@github.com:choicelab/choicelab_openpi.git
-
-# Pull submodules
-git submodule update --init --recursive
-```
-
-Next, you'll need to get a Python environment working. 
-```bash
-# Install UV from Astral
-# https://docs.astral.sh/uv/getting-started/installation/
-# I used the pipx installation
-pipx install uv
-
-# Set up the environment using Astral
-GIT_LFS_SKIP_SMUDGE=1 uv sync
-GIT_LFS_SKIP_SMUDGE=1 uv pip install -e .
-```
+This is a private fork of the public openpi repo used for development.
 
 See further details below in the official openpi documentation if you're having issues.
 

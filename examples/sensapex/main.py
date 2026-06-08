@@ -27,20 +27,22 @@ CONTROL_FREQUENCY_HZ = 3
 # reversed (min > max) ordering, so encoding "deeper z is the higher count" works either way.
 
 # uMp 1
-X1_MIN, X1_MAX = 4600, 5700
-Y1_MIN, Y1_MAX = 4900, 5500
-Z1_MIN, Z1_MAX = 8250, 8750
-D1_MIN, D1_MAX = 5900, 6100
+
+X1_MIN, X1_MAX = 17634, 18944
+Y1_MIN, Y1_MAX = 17362, 18362
+Z1_MIN, Z1_MAX = 14390, 14410
+D1_MIN, D1_MAX = 15618, 15638
 
 # uMp 2
-X2_MIN, X2_MAX = 4600, 5700
-Y2_MIN, Y2_MAX = 4900, 5500
-Z2_MIN, Z2_MAX = 8250, 8750
-D2_MIN, D2_MAX = 5900, 6100
+
+X2_MIN, X2_MAX = 10915, 12230
+Y2_MIN, Y2_MAX = 10179, 11209
+Z2_MIN, Z2_MAX = 18269, 18289
+D2_MIN, D2_MAX = 12953, 12933
 
 # Max step per control tick (prevents sudden jumps)
-MAX_DX1 = MAX_DY1 = MAX_DZ1 = MAX_DD1 = 250.0
-MAX_DX2 = MAX_DY2 = MAX_DZ2 = MAX_DD2 = 250.0
+MAX_DX1 = MAX_DY1 = MAX_DZ1 = MAX_DD1 = 50.0
+MAX_DX2 = MAX_DY2 = MAX_DZ2 = MAX_DD2 = 50.0
 
 # Optional EMA smoothing (reduces jitter)
 USE_EMA_SMOOTHING = True
